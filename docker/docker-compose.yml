@@ -1,0 +1,30 @@
+x-common: &common
+  networks:
+    - default
+  restart: unless-stopped
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  redis:
+    image: bitnamilegacy/redis:7.2.5
+    container_name: redis
+    hostname: redis
+    volumes:
+      - redis_data:/bitnami/redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redisadmin}
+    ports:
+      - "6379:6379"
+    <<: *common
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  default:
+    driver: bridge
