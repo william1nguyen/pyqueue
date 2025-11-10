@@ -21,4 +21,4 @@ class Job:
 
     @staticmethod
     def from_json(data: str):
-        return Job(**json.load(data))
+        return Job(**json.loads(data))
