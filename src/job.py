@@ -1,24 +1,63 @@
-from dataclasses import dataclass, asdict
-import json, time
-from typing import Any
+from datetime import datetime
+from typing import Any, Optional
+from uuid import uuid4
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class Job:
-    id: str
+from .types import JobState, Priority, JobPayload
+
+
+class JobOptions(BaseModel):
+    max_retries: int = Field(default=3, ge=0)
+    timeout: Optional[int] = Field(default=None, ge=1)
+    priority: Priority = Field(default=Priority.NORMAL)
+    delay: int = Field(default=0, ge=0)
+    backoff_type: str = Field(default="exponential")
+    backoff_delay: int = Field(default=1000, ge=0)
+
+
+class Job(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid4()))
     name: str
-    payload: Any
-    retries: int = 0
-    max_retries: int = 3
-    created_at: float = 0.0
+    payload: JobPayload
+    state: JobState = Field(default=JobState.WAITING)
+    attempts: int = Field(default=0, ge=0)
+    options: JobOptions = Field(default_factory=JobOptions)
 
-    def __post_init__(self):
-        if not self.created_at:
-            self.created_at = time.time()
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    failed_at: Optional[datetime] = None
 
-    def to_json(self):
-        return json.dumps(asdict(self))
+    error: Optional[str] = None
+    result: Optional[Any] = None
+    progress: int = Field(default=0, ge=0, le=100)
 
-    @staticmethod
-    def from_json(data: str):
-        return Job(**json.loads(data))
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+        }
+
+    def to_json(self) -> str:
+        return self.model_dump_json()
+
+    @classmethod
+    def from_json(cls, data: str) -> "Job":
+        return cls.model_validate_json(data)
+
+    def mark_active(self) -> None:
+        self.state = JobState.ACTIVE
+        self.started_at = datetime.utcnow()
+        self.attempts += 1
+
+    def mark_completed(self, result: Any = None) -> None:
+        self.state = JobState.COMPLETED
+        self.completed_at = datetime.utcnow()
+        self.result = result
+        self.progress = 100
+
+    def should_retry(self) -> bool:
+        return self.attempts < self.options.max_retries
+
+    def update_progress(self, progress: int) -> None:
+        self.progress = max(0, min(100, progress))
