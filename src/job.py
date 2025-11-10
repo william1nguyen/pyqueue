@@ -3,7 +3,6 @@ from typing import Any, Optional
 from uuid import uuid4
 from pydantic import BaseModel, Field
 
-
 from .types import JobState, Priority, JobPayload
 
 
@@ -55,6 +54,11 @@ class Job(BaseModel):
         self.completed_at = datetime.utcnow()
         self.result = result
         self.progress = 100
+
+    def mark_failed(self, error: str) -> None:
+        self.state = JobState.FAILED
+        self.failed_at = datetime.utcnow()
+        self.error = error
 
     def should_retry(self) -> bool:
         return self.attempts < self.options.max_retries
