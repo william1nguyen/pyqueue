@@ -4,3 +4,7 @@ class ConnectionError(Exception):
 
 class JobNotFoundError(Exception):
     pass
+
+
+class SerializationError(Exception):
+    pass

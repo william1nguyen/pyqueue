@@ -3,15 +3,22 @@ import time
 
 from .connection import RedisConnection
 from .job import Job, JobOptions, JobState, JobPayload
-from .types import Priority
+from .types import Priority, Serializer
 from .exceptions import JobNotFoundError
 from .utils.logger import get_logger
+from .utils.serializer import JSONSerializer
 
 
 class TaskQueue:
-    def __init__(self, connection: RedisConnection, name: str = "default"):
+    def __init__(
+        self,
+        connection: RedisConnection,
+        name: str = "default",
+        serializer: Optional[Serializer] = None,
+    ):
         self.redis = connection.client
         self.name = name
+        self.serializer = serializer or JSONSerializer()
         self.logger = get_logger(f"queue.{name}")
         self._init_keys()
 
@@ -34,8 +41,10 @@ class TaskQueue:
         opts = options or JobOptions()
         job = Job(name=name, payload=payload, options=opts)
 
+        serialized_data = self.serializer.serialize(job.model_dump(mode="json"))
+
         with self.redis.pipeline() as pipe:
-            pipe.set(self._job_key(job.id), job.to_json())
+            pipe.set(self._job_key(job.id), serialized_data)
 
             if opts.delay > 0:
                 pipe.zadd(self.delayed_key, {job.id: time.time() + opts.delay})
@@ -47,7 +56,9 @@ class TaskQueue:
 
             pipe.execute()
 
-        self.logger.info("Job added", job_id=job.id, job_name=name)
+        self.logger.info(
+            "Job added", job_id=job.id, job_name=name, priority=opts.priority.name
+        )
         return job
 
     def get_next_job(self, timeout: int = 1) -> Optional[Job]:
@@ -71,6 +82,7 @@ class TaskQueue:
     def complete(self, job: Job, result: Any = None) -> None:
         job.mark_completed(result)
         self._update_job_state(job, self.completed_key)
+        self.logger.info("Job completed", job_id=job.id, job_name=job.name)
 
     def fail(self, job: Job, error: str) -> None:
         job.mark_failed(error)
@@ -84,13 +96,14 @@ class TaskQueue:
             pipe.lrem(self.active_key, 1, job.id)
             pipe.zadd(self.delayed_key, {job.id: time.time() + delay / 1000})
             pipe.execute()
-        self.logger.info("Job retry", job_id=job.id, delay=delay)
+        self.logger.info("Job retry", job_id=job.id, attempt=job.attempts, delay=delay)
 
     def get_job(self, job_id: str) -> Job:
         data = self.redis.get(self._job_key(job_id))
         if not data:
             raise JobNotFoundError(f"Job {job_id} not found")
-        return Job.from_json(data)
+        job_dict = self.serializer.deserialize(data)
+        return Job.model_validate(job_dict)
 
     def update_progress(self, job_id: str, progress: int) -> None:
         job = self.get_job(job_id)
@@ -134,6 +147,15 @@ class TaskQueue:
                 pipe.execute()
 
         return len(completed) + len(failed)
+
+    def pause(self) -> None:
+        self.redis.set(f"queue:{self.name}:paused", "1")
+
+    def resume(self) -> None:
+        self.redis.delete(f"queue:{self.name}:paused")
+
+    def is_paused(self) -> bool:
+        return bool(self.redis.get(f"queue:{self.name}:paused"))
 
     def _activate_job(self, job_id: str) -> Optional[Job]:
         data = self.redis.get(self._job_key(job_id))
