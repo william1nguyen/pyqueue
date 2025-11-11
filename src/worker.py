@@ -6,10 +6,11 @@ from concurrent.futures import ThreadPoolExecutor, Future
 
 from .connection import RedisConnection
 from .job import Job
-from .types import ProcessorFunc
+from .types import ProcessorFunc, RateLimiter
 from .queue import TaskQueue
 from .utils.backoff import get_backoff_strategy
 from .utils.logger import get_logger
+from .middleware.base import MiddlewareChain
 
 
 class Worker:
@@ -18,9 +19,13 @@ class Worker:
         connection: RedisConnection,
         queue_name: str = "default",
         concurrency: int = 1,
+        rate_limiter: Optional[RateLimiter] = None,
+        middleware_chain: Optional[MiddlewareChain] = None,
     ):
         self.queue = TaskQueue(connection, queue_name)
         self.concurrency = concurrency
+        self.rate_limiter = rate_limiter
+        self.middleware = middleware_chain or MiddlewareChain()
         self.logger = get_logger(f"worker.{queue_name}")
 
         self.processors: Dict[str, ProcessorFunc] = {}
@@ -43,6 +48,9 @@ class Worker:
 
         try:
             while self.running:
+                if self.queue.is_paused():
+                    time.sleep(1)
+                    continue
                 self._poll_and_process()
         except KeyboardInterrupt:
             pass
@@ -60,6 +68,8 @@ class Worker:
             self.executor.shutdown(wait=True)
             self.executor = None
 
+        self.logger.info("Worker stopped")
+
     def _poll_and_process(self) -> None:
         if len(self.active_jobs) >= self.concurrency:
             time.sleep(0.1)
@@ -74,15 +84,31 @@ class Worker:
             self.queue.fail(job, f"No processor for: {job.name}")
             return
 
+        if self.rate_limiter and not self.rate_limiter.acquire(job.name):
+            self.queue.retry(job, 1000)
+            self.logger.warning("Rate limited", job_id=job.id, job_name=job.name)
+            return
+
         future = self.executor.submit(self._execute, job)
         self.active_jobs[job.id] = future
 
     def _execute(self, job: Job) -> None:
         try:
-            res = self.processors[job.name](job.payload)
-            self.queue.complete(job, res)
+            processor = self.processors[job.name]
+
+            if self.middleware.middlewares:
+                result = self.middleware.execute(job, processor)
+            else:
+                result = processor(job.payload)
+
+            self.queue.complete(job, result)
+
+            if self.rate_limiter:
+                self.rate_limiter.release(job.name)
+
         except Exception as e:
             error = str(e)
+            self.logger.error("Job execution failed", job_id=job.id, error=error)
 
             if job.should_retry():
                 strategy = get_backoff_strategy(job.options.backoff_type)
@@ -92,6 +118,9 @@ class Worker:
                 self.queue.retry(job, delay)
             else:
                 self.queue.fail(job, error)
+
+            if self.rate_limiter:
+                self.rate_limiter.release(job.name)
 
     def _cleanup_done(self) -> None:
         done = [job_id for job_id, future in self.active_jobs.items() if future.done()]
@@ -106,3 +135,11 @@ class Worker:
         self.logger.info(f"Signal {signum} received")
         self.stop()
         sys.exit(0)
+
+    def get_stats(self) -> dict:
+        return {
+            "running": self.running,
+            "active_jobs": len(self.active_jobs),
+            "concurrency": self.concurrency,
+            "queue_counts": self.queue.get_counts(),
+        }
