@@ -1,2 +1,2 @@
 #!/bin/sh
-docker-compose -f deployment/docker-compose.yml -p pyqueue down
+docker-compose -f docker/docker-compose.yml -p pyqueue down

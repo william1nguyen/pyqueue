@@ -1,2 +1,2 @@
 #!/bin/sh
-docker-compose -f deployment/docker-compose.yml -p pyqueue up -d
+docker-compose -f docker/docker-compose.yml -p pyqueue up -d
