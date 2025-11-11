@@ -24,6 +24,7 @@ class MiddlewareChain:
 
     def use(self, middleware: Middleware) -> "MiddlewareChain":
         self.middlewares.append(middleware)
+        return self
 
     def execute(self, job: Job, processor: Callable[[dict[str, Any]], Any]) -> Any:
         for middleware in self.middlewares:
@@ -32,7 +33,7 @@ class MiddlewareChain:
         try:
             result = processor(job.payload)
 
-            for middlware in reversed(self.middlewares):
+            for middleware in reversed(self.middlewares):
                 middleware.after_process(job, result)
 
             return result
