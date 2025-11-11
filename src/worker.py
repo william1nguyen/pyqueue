@@ -1,10 +1,10 @@
 import time
 import sys
 import signal
-from typing import Optional, Callable, Dict
+from typing import Optional, Dict
 from concurrent.futures import ThreadPoolExecutor, Future
-from connection import RedisConnection
 
+from .connection import RedisConnection
 from .job import Job
 from .types import ProcessorFunc
 from .queue import TaskQueue
@@ -27,6 +27,8 @@ class Worker:
         self.running = False
         self.executor: Optional[ThreadPoolExecutor] = None
         self.active_jobs: Dict[str, Future] = {}
+
+        self._setup_signals()
 
     def process(self, job_name: str, handler: ProcessorFunc) -> None:
         self.processors[job_name] = handler
@@ -84,7 +86,9 @@ class Worker:
 
             if job.should_retry():
                 strategy = get_backoff_strategy(job.options.backoff_type)
-                delay = strategy.caculate_delay(job.attempts, job.options.backoff_delay)
+                delay = strategy.calculate_delay(
+                    job.attempts, job.options.backoff_delay
+                )
                 self.queue.retry(job, delay)
             else:
                 self.queue.fail(job, error)
@@ -93,6 +97,10 @@ class Worker:
         done = [job_id for job_id, future in self.active_jobs.items() if future.done()]
         for job_id in done:
             del self.active_jobs[job_id]
+
+    def _setup_signals(self) -> None:
+        signal.signal(signal.SIGINT, self._shutdown)
+        signal.signal(signal.SIGTERM, self._shutdown)
 
     def _shutdown(self, signum, frame) -> None:
         self.logger.info(f"Signal {signum} received")
