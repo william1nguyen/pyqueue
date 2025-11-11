@@ -24,7 +24,6 @@ class MiddlewareChain:
 
     def use(self, middleware: Middleware) -> "MiddlewareChain":
         self.middlewares.append(middleware)
-        return self
 
     def execute(self, job: Job, processor: Callable[[dict[str, Any]], Any]) -> Any:
         for middleware in self.middlewares:
