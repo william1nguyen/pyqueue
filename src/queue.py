@@ -10,63 +10,48 @@ from .utils.logger import get_logger
 
 class TaskQueue:
     def __init__(self, connection: RedisConnection, name: str = "default"):
-        self.connection = connection
-        self.name = name
         self.redis = connection.client
+        self.name = name
         self.logger = get_logger(f"queue.{name}")
+        self._init_keys()
 
-        self.waiting_key = f"queue:{name}:waiting"
-        self.active_key = f"queue:{name}:active"
-        self.delayed_key = f"queue:{name}:delayed"
-        self.completed_key = f"queue:{name}:completed"
-        self.failed_key = f"queue:{name}:failed"
-        self.job_key_prefix = f"queue:{name}:job:"
-
+    def _init_keys(self):
+        self.waiting_key = f"queue:{self.name}:waiting"
+        self.active_key = f"queue:{self.name}:active"
+        self.delayed_key = f"queue:{self.name}:delayed"
+        self.completed_key = f"queue:{self.name}:completed"
+        self.failed_key = f"queue:{self.name}:failed"
         self.priority_keys = {
-            Priority.CRITICAL: f"queue:{name}:priority:critical",
-            Priority.HIGH: f"queue:{name}:priority:high",
-            Priority.NORMAL: f"queue:{name}:priority:normal",
-            Priority.LOW: f"queue:{name}:priority:low",
+            Priority.CRITICAL: f"queue:{self.name}:priority:critical",
+            Priority.HIGH: f"queue:{self.name}:priority:high",
+            Priority.NORMAL: f"queue:{self.name}:priority:normal",
+            Priority.LOW: f"queue:{self.name}:priority:low",
         }
 
     def add(
-        self,
-        name: str,
-        payload: JobPayload,
-        options: Optional[JobOptions],
+        self, name: str, payload: JobPayload, options: Optional[JobOptions] = None
     ) -> Job:
         opts = options or JobOptions()
         job = Job(name=name, payload=payload, options=opts)
 
-        pipe = self.redis.pipeline()
-        pipe.set(self._job_key(job.id), job.to_json())
+        with self.redis.pipeline() as pipe:
+            pipe.set(self._job_key(job.id), job.to_json())
 
-        if opts.delay > 0:
-            execute_at = time.time() + opts.delay
-            pipe.zadd(self.delayed_key, {job.id: execute_at})
-            job.state = JobState.DELAYED
+            if opts.delay > 0:
+                pipe.zadd(self.delayed_key, {job.id: time.time() + opts.delay})
+                job.state = JobState.DELAYED
+            elif opts.priority != Priority.NORMAL:
+                pipe.rpush(self.priority_keys[opts.priority], job.id)
+            else:
+                pipe.rpush(self.waiting_key, job.id)
 
-        elif opts.priority != Priority.NORMAL:
-            priority_key = self.priority_keys[opts.priority]
-            pipe.rpush(priority_key, job.id)
+            pipe.execute()
 
-        else:
-            pipe.rpush(self.waiting_key, job.id)
-
-        pipe.execute()
-
-        self.logger.info(
-            "Job added",
-            job_id=job.id,
-            job_name=name,
-            priority=opts.priority.name,
-            delay=opts.delay,
-        )
-
+        self.logger.info("Job added", job_id=job.id, job_name=name)
         return job
 
     def get_next_job(self, timeout: int = 1) -> Optional[Job]:
-        self._process_delayed_jobs()
+        self._move_delayed_to_waiting()
 
         for priority in [
             Priority.CRITICAL,
@@ -74,109 +59,54 @@ class TaskQueue:
             Priority.NORMAL,
             Priority.LOW,
         ]:
-            priority_key = self.priority_keys[priority]
-            job_id = self.redis.lpop(priority_key)
+            job_id = self.redis.lpop(self.priority_keys[priority])
             if job_id:
-                return self._fetch_and_active_job(job_id)
+                return self._activate_job(job_id)
 
-        res = self.redis.blpop(self.waiting_key, timeout)
-        if not res:
-            return None
-
-        _, job_id = res
-        return self._fetch_and_active_job(job_id)
-
-    def _fetch_and_active_job(self, job_id: str) -> Optional[Job]:
-        job_data = self.redis.get(self._job_key(job_id))
-        if not job_data:
-            return None
-
-        job = Job.from_json(job_data)
-        job.mark_active()
-
-        pipe = self.redis.pipeline()
-        pipe.set(self._job_key(job.id), job.to_json())
-        pipe.rpush(self.active_key, job.id)
-        pipe.execute()
-
-        return job
+        result = self.redis.blpop(self.waiting_key, timeout)
+        if result:
+            return self._activate_job(result[1])
+        return None
 
     def complete(self, job: Job, result: Any = None) -> None:
         job.mark_completed(result)
-
-        pipe = self.redis.pipeline()
-        pipe.set(self._job_key(job.id), job.to_json())
-        pipe.lrem(self.active_key, 1, job.id)
-        pipe.zadd(self.completed_key, {job.id: time.time()})
-        pipe.execute()
+        self._update_job_state(job, self.completed_key)
 
     def fail(self, job: Job, error: str) -> None:
         job.mark_failed(error)
-
-        pipe = self.redis.pipeline()
-        pipe.set(self._job_key(job.id), job.to_json())
-        pipe.lrem(self.active_key, 1, job.id)
-        pipe.zadd(self.failed_key, {job.id: time.time()})
-        pipe.execute()
-
-        self.logger.error("Job failed", job_id=job.id, job_name=job.name, error=error)
+        self._update_job_state(job, self.failed_key)
+        self.logger.error("Job failed", job_id=job.id, error=error)
 
     def retry(self, job: Job, delay: int) -> None:
         job.state = JobState.RETRYING
+        with self.redis.pipeline() as pipe:
+            pipe.set(self._job_key(job.id), job.to_json())
+            pipe.lrem(self.active_key, 1, job.id)
+            pipe.zadd(self.delayed_key, {job.id: time.time() + delay / 1000})
+            pipe.execute()
+        self.logger.info("Job retry", job_id=job.id, delay=delay)
 
-        execute_at = time.time() + delay
-        pipe = self.redis.pipeline()
-        pipe.set(
-            self._job_key(job.id),
-            job.to_json(),
-        )
-        pipe.lrem(self.active_key, 1, job.id)
-        pipe.zadd(self.delayed_key, {job.id: execute_at})
-        pipe.execute()
-
-        self.logger.info(
-            "Job scheduled for retry",
-            job_id=job.id,
-            attempt=job.attempts,
-            delay=delay,
-        )
-
-    def get_job(self, job_id: str):
-        job_data = self.redis.get(self._job_key(job_id))
-        if not job_data:
+    def get_job(self, job_id: str) -> Job:
+        data = self.redis.get(self._job_key(job_id))
+        if not data:
             raise JobNotFoundError(f"Job {job_id} not found")
-        return Job.from_json(job_data)
+        return Job.from_json(data)
 
     def update_progress(self, job_id: str, progress: int) -> None:
         job = self.get_job(job_id)
         job.update_progress(progress)
         self.redis.set(self._job_key(job.id), job.to_json())
 
-    def _process_delayed_jobs(self) -> None:
-        now = time.time()
-        delayed_jobs = self.redis.zrangebyscore(self.delayed_key, 0, now)
-
-        if not delayed_jobs:
-            return
-
-        pipe = self.redis.pipeline()
-        for job_id in delayed_jobs:
-            pipe.rpush(self.waiting_key, job_id)
-            pipe.zrem(self.delayed_key, job_id)
-        pipe.execute()
-
     def get_counts(self) -> dict[str, int]:
-        pipe = self.redis.pipeline()
-        pipe.llen(self.waiting_key)
-        pipe.llen(self.active_key)
-        pipe.zcard(self.delayed_key)
-        pipe.zcard(self.completed_key)
-        pipe.zcard(self.failed_key)
-
-        for priority_key in self.priority_keys.values():
-            pipe.llen(priority_key)
-
-        results = pipe.execute()
+        with self.redis.pipeline() as pipe:
+            pipe.llen(self.waiting_key)
+            pipe.llen(self.active_key)
+            pipe.zcard(self.delayed_key)
+            pipe.zcard(self.completed_key)
+            pipe.zcard(self.failed_key)
+            for key in self.priority_keys.values():
+                pipe.llen(key)
+            results = pipe.execute()
 
         return {
             "waiting": results[0],
@@ -192,19 +122,49 @@ class TaskQueue:
 
     def clean(self, grace_period: int = 86400) -> int:
         cutoff = time.time() - grace_period
-
-        pipe = self.redis.pipeline()
         completed = self.redis.zrangebyscore(self.completed_key, 0, cutoff)
         failed = self.redis.zrangebyscore(self.failed_key, 0, cutoff)
 
-        for job_id in completed + failed:
-            pipe.delete(self._job_key(job_id))
-
-        pipe.zremrangebyscore(self.completed_key, 0, cutoff)
-        pipe.zremrangebyscore(self.failed_key, 0, cutoff)
-        pipe.execute()
+        if completed or failed:
+            with self.redis.pipeline() as pipe:
+                for job_id in completed + failed:
+                    pipe.delete(self._job_key(job_id))
+                pipe.zremrangebyscore(self.completed_key, 0, cutoff)
+                pipe.zremrangebyscore(self.failed_key, 0, cutoff)
+                pipe.execute()
 
         return len(completed) + len(failed)
 
+    def _activate_job(self, job_id: str) -> Optional[Job]:
+        data = self.redis.get(self._job_key(job_id))
+        if not data:
+            return None
+
+        job = Job.from_json(data)
+        job.mark_active()
+
+        with self.redis.pipeline() as pipe:
+            pipe.set(self._job_key(job.id), job.to_json())
+            pipe.rpush(self.active_key, job.id)
+            pipe.execute()
+
+        return job
+
+    def _update_job_state(self, job: Job, target_key: str) -> None:
+        with self.redis.pipeline() as pipe:
+            pipe.set(self._job_key(job.id), job.to_json())
+            pipe.lrem(self.active_key, 1, job.id)
+            pipe.zadd(target_key, {job.id: time.time()})
+            pipe.execute()
+
+    def _move_delayed_to_waiting(self) -> None:
+        delayed = self.redis.zrangebyscore(self.delayed_key, 0, time.time())
+        if delayed:
+            with self.redis.pipeline() as pipe:
+                for job_id in delayed:
+                    pipe.rpush(self.waiting_key, job_id)
+                    pipe.zrem(self.delayed_key, job_id)
+                pipe.execute()
+
     def _job_key(self, job_id: str) -> str:
-        return f"{self.job_key_prefix}{job_id}"
+        return f"queue:{self.name}:job:{job_id}"
