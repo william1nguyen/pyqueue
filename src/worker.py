@@ -35,8 +35,12 @@ class Worker:
 
         self._setup_signals()
 
-    def process(self, job_name: str, handler: ProcessorFunc) -> None:
-        self.processors[job_name] = handler
+    def process(self, job_name: str) -> None:
+        def decorator(handler: ProcessorFunc):
+            self.processors[job_name] = handler
+            return handler
+
+        return decorator
 
     def start(self) -> None:
         if self.running:
