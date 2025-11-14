@@ -1,7 +1,8 @@
+from datetime import datetime, UTC
+from typing import Any
+
 import logging
 import json
-from datetime import datetime
-from typing import Any
 
 
 class StructuredLogger:
@@ -15,7 +16,10 @@ class StructuredLogger:
             self.logger.addHandler(handler)
 
     def _log(self, level: int, message: str, **kwargs: Any) -> None:
-        extra = {"timestamp": datetime.utcnow().isoformat(), **kwargs}
+        extra = {
+            "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+            **kwargs,
+        }
         self.logger.log(level, message, extra={"structured": extra})
 
     def debug(self, message: str, **kwargs: Any) -> None:

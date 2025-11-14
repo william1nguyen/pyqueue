@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any, Optional
 from uuid import uuid4
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from .types import JobState, Priority, JobPayload
 
@@ -23,7 +23,7 @@ class Job(BaseModel):
     attempts: int = Field(default=0, ge=0)
     options: JobOptions = Field(default_factory=JobOptions)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     failed_at: Optional[datetime] = None
@@ -31,11 +31,6 @@ class Job(BaseModel):
     error: Optional[str] = None
     result: Optional[Any] = None
     progress: int = Field(default=0, ge=0, le=100)
-
-    class Config:
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-        }
 
     def to_json(self) -> str:
         return self.model_dump_json()
@@ -46,18 +41,18 @@ class Job(BaseModel):
 
     def mark_active(self) -> None:
         self.state = JobState.ACTIVE
-        self.started_at = datetime.utcnow()
+        self.started_at = datetime.now(UTC)
         self.attempts += 1
 
     def mark_completed(self, result: Any = None) -> None:
         self.state = JobState.COMPLETED
-        self.completed_at = datetime.utcnow()
+        self.completed_at = datetime.now(UTC)
         self.result = result
         self.progress = 100
 
     def mark_failed(self, error: str) -> None:
         self.state = JobState.FAILED
-        self.failed_at = datetime.utcnow()
+        self.failed_at = datetime.now(UTC)
         self.error = error
 
     def should_retry(self) -> bool:
