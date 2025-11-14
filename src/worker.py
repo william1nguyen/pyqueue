@@ -16,17 +16,16 @@ from .middleware.base import MiddlewareChain
 class Worker:
     def __init__(
         self,
-        connection: RedisConnection,
-        queue_name: str = "default",
+        queue: TaskQueue,
         concurrency: int = 1,
         rate_limiter: Optional[RateLimiter] = None,
         middleware_chain: Optional[MiddlewareChain] = None,
     ):
-        self.queue = TaskQueue(connection, queue_name)
+        self.queue = queue
         self.concurrency = concurrency
         self.rate_limiter = rate_limiter
         self.middleware = middleware_chain or MiddlewareChain()
-        self.logger = get_logger(f"worker.{queue_name}")
+        self.logger = get_logger(f"worker.{queue.name}")
 
         self.processors: Dict[str, ProcessorFunc] = {}
         self.running = False

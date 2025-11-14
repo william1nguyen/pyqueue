@@ -11,7 +11,7 @@ from ..connection import RedisConnection
 
 @pytest.fixture
 def redis_connection():
-    conn = RedisConnection(host="localhost", port=6379, password="local")
+    conn = RedisConnection(host="localhost", port=6379, password="redisadmin")
     yield conn
     conn.client.flushdb()
     conn.close()
@@ -299,7 +299,7 @@ class TestAutoRetryDLQ:
 class TestWorkerWithDLQ:
     def test_worker_moves_job_to_dlq_on_exhausted_retries(self, redis_connection):
         queue = TaskQueue(redis_connection, name="worker_test", enable_dlq=True)
-        worker = Worker(redis_connection, queue_name="worker_test", concurrency=1)
+        worker = Worker(queue=queue, concurrency=1)
 
         @worker.process("failing_job")
         def failing_job(payload):
@@ -333,9 +333,7 @@ class TestWorkerWithDLQ:
         service_available = [False]
         attempt_count = [0]
 
-        worker = Worker(
-            redis_connection, queue_name="worker_auto_retry_test", concurrency=1
-        )
+        worker = Worker(queue=queue, concurrency=1)
 
         @worker.process("flaky_job")
         def flaky_job(payload):
@@ -459,7 +457,7 @@ class TestDLQEdgeCases:
 class TestDLQIntegration:
     def test_full_lifecycle_with_dlq(self, redis_connection):
         queue = TaskQueue(redis_connection, name="lifecycle_test", enable_dlq=True)
-        worker = Worker(redis_connection, queue_name="lifecycle_test")
+        worker = Worker(queue=queue)
 
         call_count = [0]
 
