@@ -1,7 +1,7 @@
 from datetime import datetime, UTC
 from typing import Any, Optional
 from uuid import uuid4
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field
 
 from .types import JobState, Priority, JobPayload
 
@@ -41,7 +41,8 @@ class Job(BaseModel):
 
     def mark_active(self) -> None:
         self.state = JobState.ACTIVE
-        self.started_at = datetime.now(UTC)
+        if self.started_at is None:
+            self.started_at = datetime.now(UTC)
         self.attempts += 1
 
     def mark_completed(self, result: Any = None) -> None:
@@ -56,7 +57,10 @@ class Job(BaseModel):
         self.error = error
 
     def should_retry(self) -> bool:
-        return self.attempts < self.options.max_retries
+        return self.attempts <= self.options.max_retries
+
+    def is_exhausted(self) -> bool:
+        return self.attempts > self.options.max_retries
 
     def update_progress(self, progress: int) -> None:
         self.progress = max(0, min(100, progress))

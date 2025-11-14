@@ -12,6 +12,7 @@ class JobState(str, Enum):
     FAILED = "failed"
     DELAYED = "delayed"
     RETRYING = "retrying"
+    DEAD_LETTER = "dead_letter"
 
 
 class Priority(int, Enum):

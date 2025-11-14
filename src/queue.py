@@ -1,4 +1,4 @@
-from typing import Optional, Any
+from typing import Optional, Any, List
 import time
 
 from .connection import RedisConnection
@@ -15,10 +15,16 @@ class TaskQueue:
         connection: RedisConnection,
         name: str = "default",
         serializer: Optional[Serializer] = None,
+        enable_dlq: bool = False,
+        auto_retry_dlq: bool = False,
+        auto_retry_delay: int = 600,
     ):
         self.redis = connection.client
         self.name = name
         self.serializer = serializer or JSONSerializer()
+        self.enable_dlq = enable_dlq
+        self.auto_retry_dlq = auto_retry_dlq
+        self.auto_retry_delay = auto_retry_delay
         self.logger = get_logger(f"queue.{name}")
         self._init_keys()
 
@@ -28,6 +34,7 @@ class TaskQueue:
         self.delayed_key = f"queue:{self.name}:delayed"
         self.completed_key = f"queue:{self.name}:completed"
         self.failed_key = f"queue:{self.name}:failed"
+        self.dead_letter_key = f"queue:{self.name}:dead_letter"
         self.priority_keys = {
             Priority.CRITICAL: f"queue:{self.name}:priority:critical",
             Priority.HIGH: f"queue:{self.name}:priority:high",
@@ -63,6 +70,8 @@ class TaskQueue:
 
     def get_next_job(self, timeout: int = 1) -> Optional[Job]:
         self._move_delayed_to_waiting()
+        if self.enable_dlq and self.auto_retry_dlq:
+            self._move_scheduled_dlq_to_waiting()
 
         for priority in [
             Priority.CRITICAL,
@@ -86,8 +95,96 @@ class TaskQueue:
 
     def fail(self, job: Job, error: str) -> None:
         job.mark_failed(error)
-        self._update_job_state(job, self.failed_key)
-        self.logger.error("Job failed", job_id=job.id, error=error)
+
+        if self.enable_dlq and job.is_exhausted():
+            self.move_to_dead_letter(job)
+            self.logger.error(
+                "Job moved to DLQ",
+                job_id=job.id,
+                error=error,
+                attempts=job.attempts,
+                max_retries=job.options.max_retries,
+            )
+        else:
+            self._update_job_state(job, self.failed_key)
+            self.logger.error(
+                "Job failed",
+                job_id=job.id,
+                error=error,
+                attempts=job.attempts,
+                can_retry=job.should_retry(),
+            )
+
+    def move_to_dead_letter(self, job: Job) -> None:
+        job.state = JobState.DEAD_LETTER
+
+        with self.redis.pipeline() as pipe:
+            pipe.set(self._job_key(job.id), job.to_json())
+            pipe.lrem(self.active_key, 1, job.id)
+            pipe.zadd(self.dead_letter_key, {job.id: time.time()})
+
+            if self.auto_retry_dlq:
+                scheduled_key = f"{self.dead_letter_key}:scheduled_retry"
+                retry_time = time.time() + self.auto_retry_delay
+                pipe.zadd(scheduled_key, {job.id: retry_time})
+
+            pipe.execute()
+
+        self.logger.info("Job moved to DLQ", job_id=job.id)
+
+    def get_dead_letter_jobs(self, start: int = 0, end: int = -1) -> List[Job]:
+        job_ids = self.redis.zrange(self.dead_letter_key, start, end)
+        jobs = []
+
+        for job_id in job_ids:
+            try:
+                job = self.get_job(job_id)
+                if job.state == JobState.DEAD_LETTER:
+                    jobs.append(job)
+            except JobNotFoundError:
+                self.redis.zrem(self.dead_letter_key, job_id)
+                continue
+
+        return jobs
+
+    def retry_dead_letter(self, job_id: str) -> None:
+        job = self.get_job(job_id)
+
+        if job.state != JobState.DEAD_LETTER:
+            raise ValueError(f"Job {job_id} is not in dead letter queue")
+
+        job.state = JobState.WAITING
+        job.attempts = 0
+        job.error = None
+        job.failed_at = None
+
+        with self.redis.pipeline() as pipe:
+            pipe.set(self._job_key(job.id), job.to_json())
+            pipe.zrem(self.dead_letter_key, job.id)
+
+            scheduled_key = f"{self.dead_letter_key}:scheduled_retry"
+            pipe.zrem(scheduled_key, job.id)
+
+            if job.options.priority != Priority.NORMAL:
+                pipe.rpush(self.priority_keys[job.options.priority], job.id)
+            else:
+                pipe.rpush(self.waiting_key, job.id)
+
+            pipe.execute()
+
+        self.logger.info("Job retried from DLQ", job_id=job.id)
+
+    def _move_scheduled_dlq_to_waiting(self) -> None:
+        scheduled_key = f"{self.dead_letter_key}:scheduled_retry"
+        ready_jobs = self.redis.zrangebyscore(scheduled_key, 0, time.time())
+
+        if ready_jobs:
+            for job_id in ready_jobs:
+                try:
+                    self.retry_dead_letter(job_id)
+                except (JobNotFoundError, ValueError):
+                    self.redis.zrem(scheduled_key, job_id)
+                    continue
 
     def retry(self, job: Job, delay: int) -> None:
         job.state = JobState.RETRYING
@@ -117,6 +214,7 @@ class TaskQueue:
             pipe.zcard(self.delayed_key)
             pipe.zcard(self.completed_key)
             pipe.zcard(self.failed_key)
+            pipe.zcard(self.dead_letter_key)
             for key in self.priority_keys.values():
                 pipe.llen(key)
             results = pipe.execute()
@@ -127,10 +225,11 @@ class TaskQueue:
             "delayed": results[2],
             "completed": results[3],
             "failed": results[4],
-            "priority_critical": results[5],
-            "priority_high": results[6],
-            "priority_normal": results[7],
-            "priority_low": results[8],
+            "dead_letter": results[5],
+            "priority_critical": results[6],
+            "priority_high": results[7],
+            "priority_normal": results[8],
+            "priority_low": results[9],
         }
 
     def clean(self, grace_period: int = 86400) -> int:

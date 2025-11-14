@@ -11,7 +11,7 @@ install:
 	uv sync
 
 test:
-	uv run pytest src/tests/test_queue.py -v
+	uv run pytest src/tests/test_dlq.py -v
 
 coverage:
 	uv run pytest src/tests/ --cov=src --cov-report=html --cov-report=term-missing

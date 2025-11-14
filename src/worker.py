@@ -114,14 +114,16 @@ class Worker:
             error = str(e)
             self.logger.error("Job execution failed", job_id=job.id, error=error)
 
-            if job.should_retry():
-                strategy = get_backoff_strategy(job.options.backoff_type)
+            fresh_job = self.queue.get_job(job.id)
+
+            if fresh_job.should_retry():
+                strategy = get_backoff_strategy(fresh_job.options.backoff_type)
                 delay = strategy.calculate_delay(
-                    job.attempts, job.options.backoff_delay
+                    fresh_job.attempts, fresh_job.options.backoff_delay
                 )
-                self.queue.retry(job, delay)
+                self.queue.retry(fresh_job, delay)
             else:
-                self.queue.fail(job, error)
+                self.queue.fail(fresh_job, error)
 
             if self.rate_limiter:
                 self.rate_limiter.release(job.name)

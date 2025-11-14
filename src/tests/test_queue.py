@@ -10,17 +10,14 @@ from ..exceptions import JobNotFoundError
 
 @pytest.fixture
 def redis_connection():
-    """Create a Redis connection for testing"""
     conn = RedisConnection(host="localhost", port=6379, password="redisadmin")
     yield conn
-
     conn.client.flushdb()
     conn.close()
 
 
 @pytest.fixture
 def queue(redis_connection) -> TaskQueue:
-    """Create a TaskQueue instance"""
     return TaskQueue(redis_connection, name="test_queue")
 
 
@@ -204,8 +201,20 @@ class TestJobRetryLogic:
 
     def test_should_not_retry_max_attempts_reached(self):
         job = Job(name="test", payload={}, options=JobOptions(max_retries=3))
-        job.attempts = 3
+        job.attempts = 4
         assert job.should_retry() is False
+
+    def test_is_exhausted_logic(self):
+        job = Job(name="test", payload={}, options=JobOptions(max_retries=2))
+
+        job.attempts = 1
+        assert job.is_exhausted() is False
+
+        job.attempts = 2
+        assert job.is_exhausted() is False
+
+        job.attempts = 3
+        assert job.is_exhausted() is True
 
     def test_mark_active_increments_attempts(self):
         job = Job(name="test", payload={})
