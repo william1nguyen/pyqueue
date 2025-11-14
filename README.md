@@ -44,6 +44,7 @@ A lightweight, Redis-backed distributed job queue system for Python, inspired by
   - [Project Structure](#project-structure)
   - [Redis Keys Structure](#redis-keys-structure)
   - [Key Design Decisions](#key-design-decisions)
+- [Benchmark](#benchmark)
 - [Development](#development)
   - [Setup Development Environment](#setup-development-environment)
   - [Running the Project](#running-the-project)
@@ -918,23 +919,6 @@ options = JobOptions(
 
 ## Architecture
 
-### Project Structure
-
-```
-pyqueue/
-├── connection.py       # Redis connection management
-├── exceptions.py       # Custom exception classes
-├── job.py             # Job and JobOptions models
-├── queue.py           # TaskQueue implementation
-├── worker.py          # Worker with concurrent processing
-├── types.py           # Type definitions and protocols
-├── rate_limit.py      # Rate limiting strategies
-├── backoff.py         # Backoff/retry strategies
-├── logger.py          # Structured logging
-├── serializer.py      # Serialization (JSON, Pickle)
-└── base.py            # Middleware system
-```
-
 ### Redis Keys Structure
 
 ```
@@ -977,6 +961,28 @@ queue:{name}:paused               # Pause flag
 - All state changes persisted to Redis
 - Timestamps track state transitions
 - Enables monitoring and debugging
+
+## Benchmark
+
+| Workers | Jobs  | Work (ms) | Jobs/min | Success% |
+|--------:|------:|-----------:|----------:|----------:|
+| 4       | 2000  | 10         | 2020      | 100% |
+| 8       | 5000  | 10         | 3910      | 100% |
+| 16      | 10000 | 10         | 7641      | 100% |
+| 32      | 20000 | 10         | **17240** | 100% |
+| 16      | 10000 | 5          | 7367      | 100% |
+| 32      | 20000 | 5          | 17114     | 100% |
+
+**Maximum throughput:** **~17k jobs/min**  
+**Best configuration:** **32 workers @ 10ms per job**
+
+> Note: These numbers come from a local machine. Real-world performance will vary depending on server hardware, Redis configuration, and workload characteristics.
+
+### **Run the benchmark**
+
+```bash
+make benchmark
+```
 
 ## Development
 
@@ -1064,5 +1070,5 @@ services:
 - [ ] Repeatable jobs (cron-like scheduling)
 - [ ] Dead letter queue for permanently failed jobs
 - [ ] Redis Cluster support for high availability
-- [ ] Comprehensive test suite and benchmarks
+- [x] Comprehensive test suite and benchmarks
 - [ ] Web UI for monitoring and management

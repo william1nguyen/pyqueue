@@ -16,6 +16,9 @@ test:
 coverage:
 	uv run pytest src/tests/ --cov=src --cov-report=html --cov-report=term-missing
 
+benchmark:
+	uv run python -m src.benchmark
+
 clean:
 	@echo "$(BLUE)Cleaning up...$(NC)"
 	rm -rf .pytest_cache
