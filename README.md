@@ -80,22 +80,22 @@ PyQueue is a Redis-based distributed job queue system for Python applications. I
 
 ### Core Capabilities
 
-- **Redis-Backed Storage**: Job data persisted in Redis - [connection.py](connection.py)
+- **Redis-Backed Storage**: Job data persisted in Redis - [connection.py](src/connection.py)
 - **Job States**: WAITING, ACTIVE, COMPLETED, FAILED, DELAYED, RETRYING, DEAD_LETTER
-- **Priority Queues**: CRITICAL, HIGH, NORMAL, and LOW priority levels - [types.py](types.py)
-- **Retry Strategies** - [backoff.py](backoff.py)
+- **Priority Queues**: CRITICAL, HIGH, NORMAL, and LOW priority levels - [types.py](src/types.py)
+- **Retry Strategies** - [backoff.py](src/utils/backoff.py)
   - Exponential backoff with optional jitter
   - Linear backoff
   - Fixed delay backoff
-- **Rate Limiting** - [rate_limit.py](rate_limit.py)
+- **Rate Limiting** - [rate_limit.py](src/strategies/rate_limit.py)
   - Token Bucket
   - Sliding Window
   - Leaky Bucket
-- **Middleware System**: Custom processing logic hooks - [base.py](base.py)
+- **Middleware System**: Custom processing logic hooks - [base.py](src/middleware/base.py)
 - **Dead Letter Queue (DLQ)**: Handle permanently failed jobs with auto-retry
 - **Concurrent Processing**: ThreadPoolExecutor-based job processing
-- **Structured Logging**: JSON-formatted logs - [logger.py](logger.py)
-- **Serialization**: JSON and Pickle support - [serializer.py](serializer.py)
+- **Structured Logging**: JSON-formatted logs - [logger.py](src/utils/logger.py)
+- **Serialization**: JSON and Pickle support - [serializer.py](src/utils/serializer.py)
 
 ## Quick Start
 
@@ -161,7 +161,7 @@ worker.start()
 
 ### Job
 
-Implementation: [job.py](job.py)
+Implementation: [job.py](src/job.py)
 
 The Job class represents a unit of work with comprehensive metadata tracking.
 
@@ -217,7 +217,7 @@ json_data = job.to_json()
 
 ### Queue
 
-Implementation: [queue.py](queue.py)
+Implementation: [queue.py](src/queue.py)
 
 The TaskQueue manages job lifecycle and provides efficient job retrieval with priority support.
 
@@ -289,7 +289,7 @@ queue.pause()
 
 ### Worker
 
-Implementation: [worker.py](worker.py)
+Implementation: [worker.py](src/worker.py)
 
 The Worker class handles concurrent job processing with automatic retry and rate limiting.
 
@@ -436,7 +436,7 @@ scheduled_job = queue.add(
 
 ### Job Retry with Backoff
 
-Implementation: [backoff.py](backoff.py)
+Implementation: [backoff.py](src/utils/backoff.py)
 
 Automatic retry with intelligent backoff:
 
@@ -493,7 +493,7 @@ options = JobOptions(
 
 ### Rate Limiting
 
-Implementation: [rate_limit.py](rate_limit.py)
+Implementation: [rate_limit.py](src/strategies/rate_limit.py)
 
 Protect external services from overload with multiple rate limiting strategies.
 
@@ -562,7 +562,7 @@ limiter = LeakyBucketRateLimiter(
 
 ### Middleware System
 
-Implementation: [base.py](base.py)
+Implementation: [base.py](src/middleware/base.py)
 
 Add cross-cutting concerns like logging, metrics, or validation:
 
@@ -606,7 +606,7 @@ worker = Worker(
 
 ### Dead Letter Queue (DLQ)
 
-Implementation: [queue.py](queue.py)
+Implementation: [queue.py](src/queue.py)
 
 Handle jobs that have exhausted all retry attempts. DLQ provides a safety net for permanently failed jobs, allowing you to investigate issues and manually retry when ready.
 
@@ -1001,7 +1001,7 @@ def process_large_file(payload):
 
 ### Structured Logging
 
-Implementation: [logger.py](logger.py)
+Implementation: [logger.py](src/utils/logger.py)
 
 All components use structured logging for easy monitoring:
 
@@ -1111,25 +1111,6 @@ options = JobOptions(
 ```
 
 ## Architecture
-
-### Project Structure
-
-```
-pyqueue/
-├── connection.py           # Redis connection management
-├── job.py                  # Job model and state management
-├── queue.py                # Queue operations and job lifecycle
-├── worker.py               # Worker with concurrent processing
-├── types.py                # Type definitions and enums
-├── exceptions.py           # Custom exceptions
-├── utils/
-│   ├── backoff.py         # Retry backoff strategies
-│   ├── logger.py          # Structured logging
-│   └── serializer.py      # JSON and Pickle serializers
-├── middleware/
-│   └── base.py            # Middleware system
-└── rate_limit.py          # Rate limiting implementations
-```
 
 ### Redis Keys Structure
 
