@@ -1,6 +1,7 @@
 import pytest
 import time
 
+from ..scheduler import JobScheduler
 from ..queue import TaskQueue, BatchOptions
 from ..job import Job, JobOptions
 from ..types import Priority, JobState
@@ -31,6 +32,11 @@ def batch_queue(redis_connection) -> TaskQueue:
         name="test_batch_queue",
         batch_options=BatchOptions(batch_size=500, flush_interval=30),
     )
+
+
+@pytest.fixture
+def job_scheduler(queue) -> JobScheduler:
+    return JobScheduler(queue=queue)
 
 
 class TestJobCreation:
@@ -272,6 +278,20 @@ class TestQueueBatch:
         for job in jobs:
             fetched = batch_queue.get_job(job.id)
             assert fetched.state == JobState.WAITING
+
+
+class TestQueueScheduler:
+
+    def test_add_job_with_scheduler(self, job_scheduler: JobScheduler):
+        job_scheduler.add_cron_job(
+            job_name="test",
+            payload={},
+            cron_expression="* * * * *",
+        )
+
+        jobs = job_scheduler.scheduler.get_jobs()
+        assert len(jobs) == 1
+        assert jobs[0].id.startswith("cron_test_")
 
 
 if __name__ == "__main__":
