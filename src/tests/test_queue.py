@@ -1,7 +1,7 @@
 import pytest
 import time
 
-from ..queue import TaskQueue
+from ..queue import TaskQueue, BatchOptions
 from ..job import Job, JobOptions
 from ..types import Priority, JobState
 from ..connection import RedisConnection
@@ -10,7 +10,7 @@ from ..exceptions import JobNotFoundError
 
 @pytest.fixture
 def redis_connection():
-    conn = RedisConnection(host="localhost", port=6379, password="redisadmin")
+    conn = RedisConnection(host="localhost", port=6379, password="local")
     yield conn
     conn.client.flushdb()
     conn.close()
@@ -18,7 +18,19 @@ def redis_connection():
 
 @pytest.fixture
 def queue(redis_connection) -> TaskQueue:
-    return TaskQueue(redis_connection, name="test_queue")
+    return TaskQueue(
+        redis_connection,
+        name="test_queue",
+    )
+
+
+@pytest.fixture
+def batch_queue(redis_connection) -> TaskQueue:
+    return TaskQueue(
+        redis_connection,
+        name="test_batch_queue",
+        batch_options=BatchOptions(batch_size=500, flush_interval=30),
+    )
 
 
 class TestJobCreation:
@@ -50,7 +62,7 @@ class TestJobCreation:
 
 
 class TestQueueOperations:
-    def test_add_job_to_queue(self, queue):
+    def test_add_job_to_queue(self, queue: TaskQueue):
         job = queue.add("test_job", {"data": "value"})
         assert job.id is not None
         assert job.name == "test_job"
@@ -58,14 +70,14 @@ class TestQueueOperations:
         counts = queue.get_counts()
         assert counts["waiting"] == 1
 
-    def test_add_job_with_priority(self, queue):
+    def test_add_job_with_priority(self, queue: TaskQueue):
         options = JobOptions(priority=Priority.HIGH)
         job = queue.add("test_job", {"data": "value"}, options)
 
         counts = queue.get_counts()
         assert counts["priority_high"] == 1
 
-    def test_add_delayed_job(self, queue):
+    def test_add_delayed_job(self, queue: TaskQueue):
         options = JobOptions(delay=2)
         queue.add("test_job", {"data": "value"}, options)
 
@@ -73,7 +85,7 @@ class TestQueueOperations:
         assert counts["delayed"] == 1
         assert counts["waiting"] == 0
 
-    def test_get_next_job_fifo(self, queue):
+    def test_get_next_job_fifo(self, queue: TaskQueue):
         job1 = queue.add("job1", {"order": 1})
         queue.add("job2", {"order": 2})
 
@@ -81,7 +93,7 @@ class TestQueueOperations:
         assert next_job.id == job1.id
         assert next_job.state == JobState.ACTIVE
 
-    def test_priority_ordering(self, queue):
+    def test_priority_ordering(self, queue: TaskQueue):
         queue.add("low", {"p": "low"}, JobOptions(priority=Priority.LOW))
         job_high = queue.add("high", {"p": "high"}, JobOptions(priority=Priority.HIGH))
         job_critical = queue.add(
@@ -94,7 +106,7 @@ class TestQueueOperations:
         next_job = queue.get_next_job()
         assert next_job.id == job_high.id
 
-    def test_delayed_job_processing(self, queue):
+    def test_delayed_job_processing(self, queue: TaskQueue):
         options = JobOptions(delay=1)
         job = queue.add("delayed_job", {"data": "value"}, options)
 
@@ -107,7 +119,7 @@ class TestQueueOperations:
         assert next_job is not None
         assert next_job.id == job.id
 
-    def test_complete_job(self, queue):
+    def test_complete_job(self, queue: TaskQueue):
         job = queue.add("test_job", {"data": "value"})
         job = queue.get_next_job()
 
@@ -118,7 +130,7 @@ class TestQueueOperations:
         assert completed_job.result == {"status": "success"}
         assert completed_job.progress == 100
 
-    def test_fail_job(self, queue):
+    def test_fail_job(self, queue: TaskQueue):
         job = queue.add("test_job", {"data": "value"})
         job = queue.get_next_job()
 
@@ -128,7 +140,7 @@ class TestQueueOperations:
         assert failed_job.state == JobState.FAILED
         assert failed_job.error == "Something went wrong"
 
-    def test_retry_job(self, queue):
+    def test_retry_job(self, queue: TaskQueue):
         job = queue.add("test_job", {"data": "value"})
         job = queue.get_next_job()
 
@@ -140,11 +152,11 @@ class TestQueueOperations:
         counts = queue.get_counts()
         assert counts["delayed"] == 1
 
-    def test_get_job_not_found(self, queue):
+    def test_get_job_not_found(self, queue: TaskQueue):
         with pytest.raises(JobNotFoundError):
             queue.get_job("non_existent_id")
 
-    def test_update_progress(self, queue):
+    def test_update_progress(self, queue: TaskQueue):
         job = queue.add("test_job", {"data": "value"})
 
         queue.update_progress(job.id, 50)
@@ -152,7 +164,7 @@ class TestQueueOperations:
         updated_job = queue.get_job(job.id)
         assert updated_job.progress == 50
 
-    def test_get_counts(self, queue):
+    def test_get_counts(self, queue: TaskQueue):
         queue.add("job1", {})
         queue.add("job2", {}, JobOptions(priority=Priority.HIGH))
         queue.add("job3", {}, JobOptions(delay=5))
@@ -167,7 +179,7 @@ class TestQueueOperations:
 
 
 class TestQueueMaintenance:
-    def test_pause_and_resume(self, queue):
+    def test_pause_and_resume(self, queue: TaskQueue):
         assert not queue.is_paused()
 
         queue.pause()
@@ -176,7 +188,7 @@ class TestQueueMaintenance:
         queue.resume()
         assert not queue.is_paused()
 
-    def test_clean_old_jobs(self, queue):
+    def test_clean_old_jobs(self, queue: TaskQueue):
         job1 = queue.add("job1", {})
         job1 = queue.get_next_job()
         queue.complete(job1)
@@ -228,7 +240,7 @@ class TestJobRetryLogic:
 
 
 class TestConcurrentOperations:
-    def test_multiple_workers_getting_jobs(self, queue):
+    def test_multiple_workers_getting_jobs(self, queue: TaskQueue):
         for i in range(5):
             queue.add(f"job_{i}", {"index": i})
 
@@ -243,6 +255,23 @@ class TestConcurrentOperations:
 
         for job in jobs:
             assert job.state == JobState.ACTIVE
+
+
+class TestQueueBatch:
+    def test_batch_add_to_queue(self, batch_queue: TaskQueue):
+        jobs = []
+        job_size = 500
+
+        for i in range(job_size):
+            job = batch_queue.add(f"test {i}", {"id": i})
+            jobs.append(job)
+
+        counts = batch_queue.get_counts()
+        assert counts["waiting"] == job_size
+
+        for job in jobs:
+            fetched = batch_queue.get_job(job.id)
+            assert fetched.state == JobState.WAITING
 
 
 if __name__ == "__main__":

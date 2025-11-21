@@ -1,4 +1,6 @@
 from typing import Optional, Any, List
+from pydantic import BaseModel
+import threading
 import time
 
 from .connection import RedisConnection
@@ -9,7 +11,14 @@ from .utils.logger import get_logger
 from .utils.serializer import JSONSerializer
 
 
+class BatchOptions(BaseModel):
+    batch_size: int
+    flush_interval: int
+    max_memory_mb: Optional[int] = None
+
+
 class TaskQueue:
+
     def __init__(
         self,
         connection: RedisConnection,
@@ -18,6 +27,7 @@ class TaskQueue:
         enable_dlq: bool = False,
         auto_retry_dlq: bool = False,
         auto_retry_delay: int = 600,
+        batch_options: Optional[BatchOptions] = None,
     ):
         self.redis = connection.client
         self.name = name
@@ -25,8 +35,16 @@ class TaskQueue:
         self.enable_dlq = enable_dlq
         self.auto_retry_dlq = auto_retry_dlq
         self.auto_retry_delay = auto_retry_delay
+
+        self.batch_options = batch_options
+        self._batch = []
+        self._lock = threading.Lock()
+
         self.logger = get_logger(f"queue.{name}")
         self._init_keys()
+
+        if batch_options and batch_options.batch_size > 1:
+            threading.Thread(target=self._auto_flush, daemon=True).start()
 
     def _init_keys(self):
         self.waiting_key = f"queue:{self.name}:waiting"
@@ -47,26 +65,46 @@ class TaskQueue:
     ) -> Job:
         opts = options or JobOptions()
         job = Job(name=name, payload=payload, options=opts)
-
         serialized_data = self.serializer.serialize(job.model_dump(mode="json"))
+        with self._lock:
+            self._batch.append((job, serialized_data, opts))
+            self.logger.info(
+                "Job added", job_id=job.id, job_name=name, priority=opts.priority.name
+            )
+            if (
+                not self.batch_options
+                or len(self._batch) >= self.batch_options.batch_size
+            ):
+                self._flush()
+
+        return job
+
+    def _auto_flush(self):
+        while True:
+            time.sleep(self.batch_options.flush_interval)
+            with self._lock:
+                if self._batch:
+                    self._flush()
+
+    def _flush(self):
+        if not self._batch:
+            return
 
         with self.redis.pipeline() as pipe:
-            pipe.set(self._job_key(job.id), serialized_data)
+            for job, serialized_data, opts in self._batch:
+                pipe.set(self._job_key(job.id), serialized_data)
 
-            if opts.delay > 0:
-                pipe.zadd(self.delayed_key, {job.id: time.time() + opts.delay})
-                job.state = JobState.DELAYED
-            elif opts.priority != Priority.NORMAL:
-                pipe.rpush(self.priority_keys[opts.priority], job.id)
-            else:
-                pipe.rpush(self.waiting_key, job.id)
+                if opts.delay > 0:
+                    pipe.zadd(self.delayed_key, {job.id: time.time() + opts.delay})
+                    job.state = JobState.DELAYED
+                elif opts.priority != Priority.NORMAL:
+                    pipe.rpush(self.priority_keys[opts.priority], job.id)
+                else:
+                    pipe.rpush(self.waiting_key, job.id)
 
             pipe.execute()
 
-        self.logger.info(
-            "Job added", job_id=job.id, job_name=name, priority=opts.priority.name
-        )
-        return job
+        self._batch.clear()
 
     def get_next_job(self, timeout: int = 1) -> Optional[Job]:
         self._move_delayed_to_waiting()

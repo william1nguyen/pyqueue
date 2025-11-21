@@ -11,7 +11,7 @@ from ..connection import RedisConnection
 
 @pytest.fixture
 def redis_connection():
-    conn = RedisConnection(host="localhost", port=6379, password="redisadmin")
+    conn = RedisConnection(host="localhost", port=6379, password="local")
     yield conn
     conn.client.flushdb()
     conn.close()
@@ -41,7 +41,7 @@ def queue_no_dlq(redis_connection):
 
 
 class TestDLQBasics:
-    def test_job_moves_to_dlq_when_exhausted(self, queue_with_dlq):
+    def test_job_moves_to_dlq_when_exhausted(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add(
             "test_job", {"data": "test"}, JobOptions(max_retries=0)
         )
@@ -59,7 +59,7 @@ class TestDLQBasics:
         assert counts["dead_letter"] == 1
         assert counts["failed"] == 0
 
-    def test_job_stays_in_failed_when_not_exhausted(self, queue_with_dlq):
+    def test_job_stays_in_failed_when_not_exhausted(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add(
             "test_job", {"data": "test"}, JobOptions(max_retries=3)
         )
@@ -78,7 +78,7 @@ class TestDLQBasics:
         assert counts["failed"] == 1
         assert counts["dead_letter"] == 0
 
-    def test_dlq_disabled_goes_to_failed(self, queue_no_dlq):
+    def test_dlq_disabled_goes_to_failed(self, queue_no_dlq: TaskQueue):
         job = queue_no_dlq.add("test_job", {"data": "test"}, JobOptions(max_retries=0))
         job = queue_no_dlq.get_next_job()
 
@@ -96,7 +96,8 @@ class TestDLQBasics:
 
 
 class TestMoveToDeadLetter:
-    def test_move_to_dead_letter_sets_state(self, queue_with_dlq):
+
+    def test_move_to_dead_letter_sets_state(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add("test_job", {"data": "test"})
         job = queue_with_dlq.get_next_job()
 
@@ -106,7 +107,7 @@ class TestMoveToDeadLetter:
         retrieved_job = queue_with_dlq.get_job(job.id)
         assert retrieved_job.state == JobState.DEAD_LETTER
 
-    def test_move_to_dead_letter_updates_redis(self, queue_with_dlq):
+    def test_move_to_dead_letter_updates_redis(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add("test_job", {"data": "test"})
         job = queue_with_dlq.get_next_job()
 
@@ -117,7 +118,7 @@ class TestMoveToDeadLetter:
         assert counts["dead_letter"] == 1
         assert counts["active"] == 0
 
-    def test_move_to_dead_letter_preserves_job_data(self, queue_with_dlq):
+    def test_move_to_dead_letter_preserves_job_data(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add(
             "test_job", {"important": "data"}, JobOptions(priority=Priority.HIGH)
         )
@@ -133,11 +134,12 @@ class TestMoveToDeadLetter:
 
 
 class TestGetDeadLetterJobs:
-    def test_get_dead_letter_jobs_returns_empty_list(self, queue_with_dlq):
+
+    def test_get_dead_letter_jobs_returns_empty_list(self, queue_with_dlq: TaskQueue):
         jobs = queue_with_dlq.get_dead_letter_jobs()
         assert jobs == []
 
-    def test_get_dead_letter_jobs_returns_jobs(self, queue_with_dlq):
+    def test_get_dead_letter_jobs_returns_jobs(self, queue_with_dlq: TaskQueue):
         for i in range(3):
             job = queue_with_dlq.add(f"job_{i}", {"id": i}, JobOptions(max_retries=0))
             job = queue_with_dlq.get_next_job()
@@ -147,7 +149,7 @@ class TestGetDeadLetterJobs:
         assert len(dlq_jobs) == 3
         assert all(j.state == JobState.DEAD_LETTER for j in dlq_jobs)
 
-    def test_get_dead_letter_jobs_pagination(self, queue_with_dlq):
+    def test_get_dead_letter_jobs_pagination(self, queue_with_dlq: TaskQueue):
         for i in range(10):
             job = queue_with_dlq.add(f"job_{i}", {"id": i}, JobOptions(max_retries=0))
             job = queue_with_dlq.get_next_job()
@@ -173,7 +175,8 @@ class TestGetDeadLetterJobs:
 
 
 class TestRetryDeadLetter:
-    def test_retry_dead_letter_moves_to_waiting(self, queue_with_dlq):
+
+    def test_retry_dead_letter_moves_to_waiting(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add(
             "test_job", {"data": "test"}, JobOptions(max_retries=0)
         )
@@ -189,7 +192,7 @@ class TestRetryDeadLetter:
         assert counts_after["dead_letter"] == 0
         assert counts_after["waiting"] == 1
 
-    def test_retry_dead_letter_resets_job_state(self, queue_with_dlq):
+    def test_retry_dead_letter_resets_job_state(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add(
             "test_job", {"data": "test"}, JobOptions(max_retries=0)
         )
@@ -203,7 +206,7 @@ class TestRetryDeadLetter:
         assert retried_job.attempts == 0
         assert retried_job.error is None
 
-    def test_retry_dead_letter_preserves_priority(self, queue_with_dlq):
+    def test_retry_dead_letter_preserves_priority(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add(
             "test_job",
             {"data": "test"},
@@ -218,13 +221,15 @@ class TestRetryDeadLetter:
         assert counts["priority_high"] == 1
         assert counts["waiting"] == 0
 
-    def test_retry_dead_letter_raises_for_non_dlq_job(self, queue_with_dlq):
+    def test_retry_dead_letter_raises_for_non_dlq_job(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add("test_job", {})
 
         with pytest.raises(ValueError, match="not in dead letter queue"):
             queue_with_dlq.retry_dead_letter(job.id)
 
-    def test_retry_dead_letter_job_can_be_processed_again(self, queue_with_dlq):
+    def test_retry_dead_letter_job_can_be_processed_again(
+        self, queue_with_dlq: TaskQueue
+    ):
         job = queue_with_dlq.add(
             "test_job", {"data": "test"}, JobOptions(max_retries=0)
         )
@@ -240,7 +245,7 @@ class TestRetryDeadLetter:
 
 
 class TestAutoRetryDLQ:
-    def test_auto_retry_schedules_job(self, queue_with_auto_retry):
+    def test_auto_retry_schedules_job(self, queue_with_auto_retry: TaskQueue):
         job = queue_with_auto_retry.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_with_auto_retry.get_next_job()
 
@@ -250,7 +255,7 @@ class TestAutoRetryDLQ:
         scheduled = queue_with_auto_retry.redis.zrange(scheduled_key, 0, -1)
         assert job.id in scheduled
 
-    def test_auto_retry_retries_after_delay(self, queue_with_auto_retry):
+    def test_auto_retry_retries_after_delay(self, queue_with_auto_retry: TaskQueue):
         job = queue_with_auto_retry.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_with_auto_retry.get_next_job()
         queue_with_auto_retry.fail(job, "Error")
@@ -268,7 +273,9 @@ class TestAutoRetryDLQ:
         assert next_job is not None
         assert next_job.id == job.id
 
-    def test_auto_retry_does_not_retry_before_delay(self, queue_with_auto_retry):
+    def test_auto_retry_does_not_retry_before_delay(
+        self, queue_with_auto_retry: TaskQueue
+    ):
         job = queue_with_auto_retry.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_with_auto_retry.get_next_job()
         queue_with_auto_retry.fail(job, "Error")
@@ -285,7 +292,7 @@ class TestAutoRetryDLQ:
         assert counts["dead_letter"] == 1
         assert counts["waiting"] == 0
 
-    def test_auto_retry_disabled_does_not_schedule(self, queue_with_dlq):
+    def test_auto_retry_disabled_does_not_schedule(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_with_dlq.get_next_job()
 
@@ -365,7 +372,8 @@ class TestWorkerWithDLQ:
 
 
 class TestDLQWithPriorities:
-    def test_retry_dlq_maintains_priority(self, queue_with_dlq):
+
+    def test_retry_dlq_maintains_priority(self, queue_with_dlq: TaskQueue):
         priorities = [Priority.CRITICAL, Priority.HIGH, Priority.NORMAL, Priority.LOW]
 
         for priority in priorities:
@@ -390,7 +398,8 @@ class TestDLQWithPriorities:
 
 
 class TestDLQConcurrent:
-    def test_multiple_jobs_can_be_in_dlq(self, queue_with_dlq):
+
+    def test_multiple_jobs_can_be_in_dlq(self, queue_with_dlq: TaskQueue):
         jobs = []
         for i in range(5):
             job = queue_with_dlq.add(f"job_{i}", {"id": i}, JobOptions(max_retries=0))
@@ -406,7 +415,7 @@ class TestDLQConcurrent:
         dlq_jobs = queue_with_dlq.get_dead_letter_jobs()
         assert len(dlq_jobs) == 5
 
-    def test_retry_multiple_jobs_from_dlq(self, queue_with_dlq):
+    def test_retry_multiple_jobs_from_dlq(self, queue_with_dlq: TaskQueue):
         job_ids = []
         for i in range(3):
             job = queue_with_dlq.add(f"job_{i}", {"id": i}, JobOptions(max_retries=0))
@@ -423,7 +432,8 @@ class TestDLQConcurrent:
 
 
 class TestDLQEdgeCases:
-    def test_fail_with_dlq_disabled_ignores_dlq(self, queue_no_dlq):
+
+    def test_fail_with_dlq_disabled_ignores_dlq(self, queue_no_dlq: TaskQueue):
         job = queue_no_dlq.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_no_dlq.get_next_job()
 
@@ -433,7 +443,7 @@ class TestDLQEdgeCases:
         assert counts["failed"] == 1
         assert counts["dead_letter"] == 0
 
-    def test_get_counts_includes_dlq(self, queue_with_dlq):
+    def test_get_counts_includes_dlq(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_with_dlq.get_next_job()
         queue_with_dlq.fail(job, "Error")
@@ -442,7 +452,7 @@ class TestDLQEdgeCases:
         assert "dead_letter" in counts
         assert counts["dead_letter"] == 1
 
-    def test_clean_does_not_affect_dlq(self, queue_with_dlq):
+    def test_clean_does_not_affect_dlq(self, queue_with_dlq: TaskQueue):
         job = queue_with_dlq.add("test_job", {}, JobOptions(max_retries=0))
         job = queue_with_dlq.get_next_job()
         queue_with_dlq.fail(job, "Error")

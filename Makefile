@@ -11,7 +11,7 @@ install:
 	uv sync
 
 test:
-	uv run pytest src/tests -v
+	uv run pytest --disable-warnings src/tests -v
 
 coverage:
 	uv run pytest src/tests/ --cov=src --cov-report=html --cov-report=term-missing
