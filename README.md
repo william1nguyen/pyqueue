@@ -1271,7 +1271,8 @@ services:
 - [x] Job cleanup with grace period
 - [x] Dead letter queue for permanently failed jobs
 - [ ] Job dependencies (parent-child relationships)
-- [ ] Repeatable jobs (cron-like scheduling)
+- [x] Batch operations (bulk add jobs)
+- [x] Repeatable jobs (cron-like scheduling)
 - [ ] Redis Cluster support for high availability
 - [x] Comprehensive test suite and benchmarks
 - [ ] Web UI for monitoring and management
