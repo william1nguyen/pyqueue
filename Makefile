@@ -24,7 +24,7 @@ clean:
 	rm -rf .pytest_cache
 	rm -rf htmlcov
 	rm -rf .coverage
-	rm -rf **/__pycache__
+	find . -type d -name "__pycache__" -exec rm -rf {} +
 	rm -rf src/**/*.pyc
 	rm -rf *.egg-info
 	rm -rf dist
